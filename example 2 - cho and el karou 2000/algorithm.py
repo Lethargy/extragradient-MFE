@@ -4,89 +4,131 @@ from scipy.stats import norm
 from scipy.interpolate import interp1d
 
 # ---------------------------------------------------------------------
+# One helper: PAV (isotonic) projection onto x1 <= ... <= xn, O(n)
+# ---------------------------------------------------------------------
+def pav(y: np.ndarray) -> np.ndarray:
+    """L2 projection of y onto the monotone nondecreasing cone."""
+    y = np.asarray(y, dtype=float)
+    lvl = []
+    wts = []
+    for val in y:
+        lvl.append(val)
+        wts.append(1)
+        while len(lvl) >= 2 and lvl[-2] > lvl[-1]:
+            w = wts[-2] + wts[-1]
+            avg = (wts[-2] * lvl[-2] + wts[-1] * lvl[-1]) / w
+            lvl[-2] = avg
+            wts[-2] = w
+            lvl.pop(); wts.pop()
+    out = np.empty_like(y)
+    i = 0
+    for avg, w in zip(lvl, wts):
+        out[i:i+w] = avg
+        i += w
+    return out
+
+# ---------------------------------------------------------------------
 # Set parameters
 # ---------------------------------------------------------------------
-
 lam = 0.1
-alpha = 0.5
+r = 0.75
 sig = 0.5
+pi = np.array([0.3, 0.7])          # component weights (same shape as X/alpha/Y)
+tol = 1e-15
 
-np.random.seed(1)
+np.random.seed(0)
 
-# initial V
-V = norm.rvs(size = 2); V.sort()
-np.save('data/V.npy', V)
+# Initial V (two-point value distribution here, but code supports general n)
+V = np.sort(norm.rvs(size=2))
+# np.save('data/V.npy', V)  # uncomment if you want this side effect
 
 # Gauss–Hermite nodes / weights for N(0, σ²)
 n_gh = 20
 z, p = roots_hermite(n_gh)
-z = np.sqrt(2.0) * sig * z        # nodes for N(0, σ²)
-p = p / np.sqrt(np.pi)            # weights for N(0, σ²)
+z = np.sqrt(2.0) * sig * z
+p = p / np.sqrt(np.pi)
 
-def dC(x):
-    """
-    Vectorized gradient ∇C_μ(x).
+inv_sig2 = 1.0 / (sig * sig)
 
-    x : scalar or 1D array of evaluation points
-    Uses global mu, V, z, p, sig.
-    """
-    x_arr = np.atleast_1d(x).astype(float)    # shape (M,)
+def H(y: np.ndarray, M: np.ndarray) -> np.ndarray:
+    """Vectorized H(y, M). y may be scalar or array."""
+    y = np.asarray(y, dtype=float)
+    M = np.asarray(M, dtype=float)
 
-    # Broadcasted shapes:
-    #   X  : (M, 1, 1)
-    #   Z  : (1, n_gh, 1)
-    #   MU : (1, 1, N_samp)
-    X  = x_arr[:, None, None]
-    Z  = z[None, :, None]
-    MU = mu[None, None, :]
+    # pow(e, a) with e = exp(1/sig^2) so pow(e,a)=exp(a/sig^2)
+    a1 = (M[1] * y - 0.5 * M[1] * M[1]) * inv_sig2
+    a0 = (M[0] * y - 0.5 * M[0] * M[0]) * inv_sig2
 
-    # Gaussian-like weights in m_i for each (x_j, z_k)
-    diff = X + Z - MU                          # (M, n_gh, N_samp)
-    w_unnorm = np.exp(-0.5 * (diff / sig)**2)
-    w = w_unnorm / w_unnorm.sum(axis=2, keepdims=True)
+    e1 = np.exp(a1)
+    e0 = np.exp(a0)
 
-    # E[V | x_j, z_k]
-    Ev = np.sum(w * V[None, None, :], axis=2)  # (M, n_gh)
-
-    # factor 1 + x z / σ²
-    factor = 1.0 + (X[:, :, 0] * Z[:, :, 0]) / (sig**2)  # (M, n_gh)
-
-    # Integrate over z with GH weights
-    grad = (Ev * factor) @ p                   # (M,)
-
-    return grad[0] if np.isscalar(x) else grad
+    num = (pi[0] * V[0] * e0) + (pi[1] * V[1] * e1)
+    den = (pi[0] * e0) + (pi[1] * e1)
+    return num / den
 
 
-# initial X
-mu = norm.rvs(size = 2); mu.sort()
-eta1 = norm.rvs(size = 2); eta1.sort()
-eta2 = norm.rvs(size = 2); eta2.sort()
-pi = np.array([0.3, 0.7])
+def dC(x: np.ndarray, M: np.ndarray) -> np.ndarray:
+    """Vectorized gradient ∇C_μ(x, M) for x an array."""
+    x = np.asarray(x, dtype=float)               # (m,)
+    X = x[:, None]                               # (m,1)
+    Z = z[None, :]                               # (1,n_gh)
+    Y = X + Z                                    # (m,n_gh)
 
-tol = 1e-16   # stopping tolerance
+    # (1 + x z / σ²)
+    factor = 1.0 + (X * Z) * inv_sig2            # (m,n_gh)
+    Hy = H(Y, M)                                 # (m,n_gh)
 
-for i in range(50):
-    np.save(f'data/mu{i}.npy', mu)
-    
-    # first optimization
-    T = interp1d(mu, V, fill_value = 'extrapolate') # optimal map from mu to V
-    d_eta1 = eta1 - mu - lam * (T(eta1) - dC(eta1))
+    return (factor * Hy) @ p                     # (m,)
 
-    while d_eta1 @ d_eta1 > tol:
-        #print(d_eta1)
-        eta1 = eta1 - alpha * d_eta1
-        eta1.sort()
-        d_eta1 = eta1 - mu - lam * (T(eta1) - dC(eta1))
-    
-    # second (extragradient) optimization
-    nu = eta1.copy()
-    T = interp1d(nu,V, fill_value = 'extrapolate') # optimal map from nu to V
-    d_eta2 = eta2 - mu - lam * (T(eta2) - dC(eta2))
 
-    while d_eta2 @ d_eta2 > tol:
-        #print(d_eta2)
-        eta2 = eta2 - alpha * d_eta2
-        eta2.sort()
-        d_eta2 = eta2 - mu - lam * (T(eta2) - dC(eta2))
-            
-    mu = eta2.copy()
+# initial variables (sorted)
+alpha = np.sort(norm.rvs(size=2))
+X     = np.sort(norm.rvs(size=2))
+Y     = np.sort(norm.rvs(size=2))
+
+tol2 = tol * tol
+inner_max = 200_000  # safety cap
+mu_hist = []
+
+for it in range(100):
+    mu_hist.append(alpha.copy())
+
+    # -------------------------------------------------------------
+    # First optimization: update X
+    # -------------------------------------------------------------
+    # Optimal map T from alpha to V (monotone 1D)
+    T = interp1d(alpha, V, fill_value = 'extrapolate') # optimal map from alpha to L(V)
+    dX = pi * (X - alpha - lam * (T(X) - dC(X, alpha)))
+
+    k = 0
+    while (dX @ dX > tol2) and (k < inner_max):
+        X = pav(X - r * dX)
+        dX = pi * (X - alpha - lam * (T(X) - dC(X, alpha)))
+        k += 1
+
+    # -------------------------------------------------------------
+    # Second (extragradient) optimization: update Y using beta = X
+    # -------------------------------------------------------------
+    beta = X.copy()
+    T = interp1d(beta,V, fill_value = 'extrapolate') # optimal map from beta to L(V)
+    dY = pi * (Y - alpha - lam * (T(Y) - dC(Y, beta)))
+
+    k = 0
+    while (dY @ dY > tol2) and (k < inner_max):
+        Y = pav(Y - r * dY)
+        dY = pi * (Y - alpha - lam * (T(Y) - dC(Y, beta)))
+        k += 1
+
+    alpha = Y.copy()
+
+mu_hist = np.stack(mu_hist)
+np.savez(
+    "data/run_001.npz",
+    mu=mu_hist,
+    V=V,
+    # optional: store params too
+    lam=lam,
+    sig=sig,
+    r=r,
+    pi=pi
+)

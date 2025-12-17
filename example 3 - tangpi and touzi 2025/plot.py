@@ -1,28 +1,29 @@
 import numpy as np
 import matplotlib.pyplot as plt
-import os
 
 # ---------------------------------------------------------------------
 # Load data
 # ---------------------------------------------------------------------
-mu = [np.load('data/'+mu) for mu in sorted(os.listdir('data'))]
-n_iter = len(mu)
-N = len(mu[0])
+data = np.load("data/data.npz", allow_pickle=True)
+mu = np.asarray(data["mu"])          # shape (n_iter, N_samp)
+n_iter = int(data["n_iter"])
+N = int(data["N_samp"])
 
 # ---------------------------------------------------------------------
-# Transport plot (X(v) vs v)
+# Scatter plot
 # ---------------------------------------------------------------------
+iters = np.arange(n_iter)
+x = np.repeat(iters, N)              # (n_iter*N,)
+y = mu.reshape(-1)                   # (n_iter*N,)
 
-fig, ax = plt.subplots(figsize = (7,5), dpi = 256)
+fig, ax = plt.subplots(figsize=(7, 5), dpi=256)
+ax.scatter(x, y, color="C0", marker=".", s=6, label="empirical measure")
 
-ax.scatter(np.repeat(0,N), mu[0], color = 'C0', marker = '.', label = 'empirical measure')
-
-for i in range(1,n_iter):
-    ax.scatter(np.repeat(i,N), mu[i], color = 'C0', marker = '.')
-
-ax.set_xlabel(r'$k$')
-ax.set_ylabel(r'$\mu_k \sim \mathcal{U}(x_1,\dots,x_n)$')
-ax.hlines(y = -0.5, xmin = 0, xmax = n_iter-1, ls = '--', color = 'C1', label = 'MFE')
+ax.set_xlabel(r"$k$")
+ax.set_ylabel(r"$\mu_k \sim \mathcal{U}(x_1,\dots,x_n)$")
+ax.set_title(r'$J(\mu,x) = \int \sin(x-y)\mu(dy) + x^2$')
+ax.hlines(y=-0.5, xmin=0, xmax=n_iter - 1, ls="--", color="C1", label="MFE")
 ax.legend()
 
-fig.savefig('plots/3.1i-tangpi-touzi.jpeg', transparent = False, bbox_inches = 'tight')
+fig.savefig("ex3-3.7(i)-tangpi-touzi.jpeg", transparent=False, bbox_inches="tight")
+plt.close(fig)

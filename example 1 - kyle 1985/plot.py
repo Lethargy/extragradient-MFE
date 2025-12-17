@@ -10,10 +10,11 @@ os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
 # ---------------------------------------------------------------------
 # Load data
 # ---------------------------------------------------------------------
-opt_mu = [np.load(f"data/mu{i}.npy") for i in range(50)]
-V = np.load("data/V.npy")
-n_iter = len(opt_mu)
-N = len(V)
+data = np.load("data.npz", allow_pickle=True)
+opt_mu = data['mu']
+V = data['V']
+n_iter = data['N_iter']
+N = data['N_samp']
 
 # ---------------------------------------------------------------------
 # Transport plot (X(v) vs v)

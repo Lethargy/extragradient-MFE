@@ -4,12 +4,37 @@ from scipy.stats import norm
 from scipy.interpolate import interp1d
 
 # ---------------------------------------------------------------------
+# Helper: PAV (isotonic) projection onto x1 <= ... <= xn, O(n)
+# ---------------------------------------------------------------------
+def pav(y: np.ndarray) -> np.ndarray:
+    """L2 projection of y onto the monotone nondecreasing cone."""
+    y = np.asarray(y, dtype=float)
+    lvl = []
+    wts = []
+    for val in y:
+        lvl.append(val)
+        wts.append(1)
+        while len(lvl) >= 2 and lvl[-2] > lvl[-1]:
+            w = wts[-2] + wts[-1]
+            avg = (wts[-2] * lvl[-2] + wts[-1] * lvl[-1]) / w
+            lvl[-2] = avg
+            wts[-2] = w
+            lvl.pop(); wts.pop()
+    out = np.empty_like(y)
+    i = 0
+    for avg, w in zip(lvl, wts):
+        out[i:i+w] = avg
+        i += w
+    return out
+
+# ---------------------------------------------------------------------
 # Set parameters
 # ---------------------------------------------------------------------
 
 N_samp = 100
+N_iter = 50
 lam = 0.1
-alpha = 0.5
+rho = 0.5
 sig = 0.5
 
 s = 1
@@ -17,7 +42,6 @@ np.random.seed(s)
 
 # initial V
 V = norm.rvs(size = N_samp); V.sort()
-np.save('data/V.npy', V)
 
 # Gauss–Hermite nodes / weights for N(0, σ²)
 n_gh = 20
@@ -25,12 +49,12 @@ z, p = roots_hermite(n_gh)
 z = np.sqrt(2.0) * sig * z        # nodes for N(0, σ²)
 p = p / np.sqrt(np.pi)            # weights for N(0, σ²)
 
-def dC(x):
+def dC(x, mu):
     """
     Vectorized gradient ∇C_μ(x).
 
     x : scalar or 1D array of evaluation points
-    Uses global mu, V, z, p, sig.
+    Uses global V, z, p, sig.
     """
     x_arr = np.atleast_1d(x).astype(float)    # shape (M,)
 
@@ -59,35 +83,45 @@ def dC(x):
     return grad[0] if np.isscalar(x) else grad
 
 
+# history of mu
+mu_hist = []
+
 # initial X
-mu = norm.rvs(size = N_samp); mu.sort()
-eta1 = norm.rvs(size = N_samp); eta1.sort()
-eta2 = norm.rvs(size = N_samp); eta2.sort()
+alpha = norm.rvs(size = N_samp); alpha.sort()
+X = norm.rvs(size = N_samp); X.sort()
+Y = norm.rvs(size = N_samp); Y.sort()
 
 tol = 1e-6   # stopping tolerance
 
-for i in range(50):
-    np.save(f'data/mu{i}.npy', mu)
+for i in range(N_iter):
+    mu_hist.append(alpha.copy())
     
     # first optimization
-    T = interp1d(mu, V, fill_value = 'extrapolate') # optimal map from mu to V
-    d_eta1 = eta1 - mu - lam * (T(eta1) - dC(eta1))
+    T = interp1d(alpha, V, fill_value = 'extrapolate') # optimal map from mu to V
+    dX = X - alpha + lam * (dC(X, alpha) - T(X))
 
-    while d_eta1 @ d_eta1 > tol:
-        #print(d_eta1)
-        eta1 = eta1 - alpha * d_eta1
-        eta1.sort()
-        d_eta1 = eta1 - mu - lam * (T(eta1) - dC(eta1))
+    while dX @ dX > tol:
+        X = pav(X - rho * dX)
+        dX = X - alpha + lam * (dC(X, alpha) - T(X))
     
     # second (extragradient) optimization
-    nu = eta1.copy()
-    T = interp1d(nu,V, fill_value = 'extrapolate') # optimal map from nu to V
-    d_eta2 = eta2 - mu - lam * (T(eta2) - dC(eta2))
+    beta = X.copy()
+    T = interp1d(beta, V, fill_value = 'extrapolate') # optimal map from nu to V
+    dY = Y - alpha + lam * (dC(Y, beta) - T(Y))
 
-    while d_eta2 @ d_eta2 > tol:
-        #print(d_eta2)
-        eta2 = eta2 - alpha * d_eta2
-        eta2.sort()
-        d_eta2 = eta2 - mu - lam * (T(eta2) - dC(eta2))
+    while dY @ dY > tol:
+        Y = pav(Y - rho * dY)
+        dY = Y - alpha + lam * (dC(Y, beta) - T(Y))
             
-    mu = eta2.copy()
+    alpha = Y.copy()
+    
+np.savez(
+    "data.npz",
+    mu=np.stack(mu_hist),
+    V=V,
+    lam=lam,
+    sig=sig,
+    rho=rho,
+    N_samp = N_samp,
+    N_iter = N_iter
+)
